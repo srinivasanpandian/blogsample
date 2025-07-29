@@ -1,7 +1,28 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { authAPI, blogAPI, imageAPI } from '../services/apiService';
 import './Admin.css';
 
 const Admin = () => {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [showLogin, setShowLogin] = useState(true);
+  const [showSetup, setShowSetup] = useState(false);
+  
+  // Login state
+  const [loginData, setLoginData] = useState({
+    email: '',
+    password: ''
+  });
+  
+  // Setup admin state
+  const [setupData, setSetupData] = useState({
+    username: '',
+    email: '',
+    password: '',
+    confirmPassword: ''
+  });
+  
+  // Blog form state
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -12,187 +33,333 @@ const Admin = () => {
   const [imagePreview, setImagePreview] = useState('');
   const [blogPosts, setBlogPosts] = useState([]);
   const [message, setMessage] = useState('');
-  const [storageUsage, setStorageUsage] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    // Load existing blog posts
-    const savedPosts = localStorage.getItem('blogPosts');
-    if (savedPosts) {
-      setBlogPosts(JSON.parse(savedPosts));
-      // Calculate storage usage
-      setStorageUsage(savedPosts.length);
+  const checkAuth = useCallback(async () => {
+    try {
+      if (authAPI.isAuthenticated()) {
+        const user = authAPI.getCurrentUser();
+        if (user && user.role === 'admin') {
+          setIsAuthenticated(true);
+          loadBlogPosts();
+        } else {
+          authAPI.logout();
+          setShowLogin(true);
+        }
+      } else {
+        setShowLogin(true);
+      }
+    } catch (error) {
+      console.error('Auth check failed:', error);
+      setShowLogin(true);
+    } finally {
+      setIsLoading(false);
     }
   }, []);
 
-  const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    });
+  // Check authentication on component mount
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
+
+  const loadBlogPosts = async () => {
+    try {
+      const response = await blogAPI.getAll({ limit: 100 });
+      setBlogPosts(response.data || []);
+    } catch (error) {
+      console.error('Error loading blogs:', error);
+      setMessage('Error loading blog posts');
+    }
   };
 
-  const compressImage = (file) => {
-    return new Promise((resolve) => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const img = new Image();
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setMessage('');
+
+    try {
+      const response = await authAPI.login(loginData);
+      if (response.data?.user?.role === 'admin') {
+        setIsAuthenticated(true);
+        setShowLogin(false);
+        loadBlogPosts();
+        setMessage('Login successful!');
+      } else {
+        setMessage('Access denied. Admin privileges required.');
+        authAPI.logout();
+      }
+    } catch (error) {
+      setMessage(error.message || 'Login failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSetupAdmin = async (e) => {
+    e.preventDefault();
+    setIsSubmitting(true);
+    setMessage('');
+
+    if (setupData.password !== setupData.confirmPassword) {
+      setMessage('Passwords do not match');
+      setIsSubmitting(false);
+      return;
+    }
+
+    try {
+      await authAPI.setupAdmin({
+        username: setupData.username,
+        email: setupData.email,
+        password: setupData.password
+      });
       
-      img.onload = () => {
-        // Calculate new dimensions (max 800px width/height)
-        let { width, height } = img;
-        const maxSize = 800;
-        
-        if (width > height) {
-          if (width > maxSize) {
-            height = (height * maxSize) / width;
-            width = maxSize;
-          }
-        } else {
-          if (height > maxSize) {
-            width = (width * maxSize) / height;
-            height = maxSize;
-          }
-        }
-        
-        canvas.width = width;
-        canvas.height = height;
-        
-        // Draw and compress
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7); // 70% quality
-        resolve(compressedDataUrl);
-      };
-      
-      img.src = URL.createObjectURL(file);
-    });
+      setIsAuthenticated(true);
+      setShowLogin(false);
+      setShowSetup(false);
+      loadBlogPosts();
+      setMessage('Admin account created successfully!');
+    } catch (error) {
+      setMessage(error.message || 'Setup failed');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleLogout = () => {
+    authAPI.logout();
+    setIsAuthenticated(false);
+    setShowLogin(true);
+    setBlogPosts([]);
+    setMessage('Logged out successfully');
+  };
+
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleLoginChange = (e) => {
+    setLoginData({ ...loginData, [e.target.name]: e.target.value });
+  };
+
+  const handleSetupChange = (e) => {
+    setSetupData({ ...setupData, [e.target.name]: e.target.value });
   };
 
   const handleFileChange = async (e) => {
     const file = e.target.files[0];
     if (file) {
-      // Check file size (max 5MB)
+      // File size and type validation
       if (file.size > 5 * 1024 * 1024) {
-        setMessage('File size too large. Please select an image smaller than 5MB.');
-        setTimeout(() => setMessage(''), 3000);
+        setMessage('File size must be less than 5MB');
         return;
       }
-      
-      // Check file type
       if (!file.type.startsWith('image/')) {
-        setMessage('Please select a valid image file.');
-        setTimeout(() => setMessage(''), 3000);
+        setMessage('Please select a valid image file');
         return;
       }
-      
+
       setSelectedFile(file);
-      
       try {
-        // Compress and create preview
-        const compressedImage = await compressImage(file);
+        const base64 = await imageAPI.fileToBase64(file);
+        const compressedImage = await imageAPI.compressImage(base64);
         setImagePreview(compressedImage);
-        
-        // Clear the URL input when file is selected
         setFormData(prev => ({ ...prev, image: '' }));
       } catch (error) {
-        setMessage('Error processing image. Please try again.');
-        setTimeout(() => setMessage(''), 3000);
+        setMessage('Error processing image');
       }
     }
   };
 
   const handleImageUrlChange = (e) => {
-    setFormData({
-      ...formData,
-      image: e.target.value
-    });
-    // Clear file selection when URL is entered
+    setFormData({ ...formData, image: e.target.value });
     setSelectedFile(null);
     setImagePreview('');
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!formData.title.trim() || !formData.description.trim()) {
       setMessage('Please fill in all required fields');
       return;
     }
 
-    // Check storage usage before adding new post
-    const newPostData = JSON.stringify([{ ...formData, timestamp: new Date().toISOString(), id: Date.now() }, ...blogPosts]);
-    
-    // Estimate storage usage (rough calculation)
-    if (newPostData.length > 4 * 1024 * 1024) { // 4MB limit
-      setMessage('Storage limit approaching. Please delete some posts or use smaller images.');
-      setTimeout(() => setMessage(''), 5000);
-      return;
-    }
-    
-    // If a file is selected, use the compressed image
-    if (selectedFile) {
-      const newPost = {
-        ...formData,
-        image: imagePreview, // Use the already compressed image
-        timestamp: new Date().toISOString(),
-        id: Date.now()
-      };
-      
-      try {
-        const updatedPosts = [newPost, ...blogPosts];
-        setBlogPosts(updatedPosts);
-        localStorage.setItem('blogPosts', JSON.stringify(updatedPosts));
-        
-        setFormData({ title: '', description: '', image: '', category: 'pizza' });
-        setSelectedFile(null);
-        setImagePreview('');
-        setMessage('Blog post added successfully!');
-        setTimeout(() => setMessage(''), 3000);
-      } catch (error) {
-        if (error.name === 'QuotaExceededError') {
-          setMessage('Storage limit exceeded. Please delete some posts or use smaller images.');
-        } else {
-          setMessage('Error saving post. Please try again.');
-        }
-        setTimeout(() => setMessage(''), 5000);
-      }
-      return;
-    }
-
-    const newPost = {
-      ...formData,
-      timestamp: new Date().toISOString(),
-      id: Date.now()
-    };
+    setIsSubmitting(true);
+    setMessage('');
 
     try {
-      const updatedPosts = [newPost, ...blogPosts];
-      setBlogPosts(updatedPosts);
-      localStorage.setItem('blogPosts', JSON.stringify(updatedPosts));
+      let imageData = formData.image;
+
+      if (selectedFile) {
+        imageData = imagePreview;
+      }
+
+      const blogData = {
+        title: formData.title,
+        description: formData.description,
+        image: imageData,
+        category: formData.category
+      };
+
+      await blogAPI.create(blogData);
       
       setFormData({ title: '', description: '', image: '', category: 'pizza' });
       setSelectedFile(null);
       setImagePreview('');
       setMessage('Blog post added successfully!');
       
-      // Clear message after 3 seconds
-      setTimeout(() => setMessage(''), 3000);
+      // Reload blog posts
+      loadBlogPosts();
     } catch (error) {
-      if (error.name === 'QuotaExceededError') {
-        setMessage('Storage limit exceeded. Please delete some posts or use smaller images.');
-      } else {
-        setMessage('Error saving post. Please try again.');
-      }
-      setTimeout(() => setMessage(''), 5000);
+      setMessage(error.message || 'Error adding blog post');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleDelete = (postId) => {
-    const updatedPosts = blogPosts.filter(post => post.id !== postId);
-    setBlogPosts(updatedPosts);
-    localStorage.setItem('blogPosts', JSON.stringify(updatedPosts));
-    setMessage('Blog post deleted successfully!');
-    setTimeout(() => setMessage(''), 3000);
+  const handleDelete = async (postId) => {
+    if (window.confirm('Are you sure you want to delete this blog post?')) {
+      try {
+        await blogAPI.delete(postId);
+        setMessage('Blog post deleted successfully!');
+        loadBlogPosts();
+      } catch (error) {
+        setMessage(error.message || 'Error deleting blog post');
+      }
+    }
   };
+
+  if (isLoading) {
+    return (
+      <div className="admin">
+        <div className="admin-container">
+          <div className="loading">Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (showSetup) {
+    return (
+      <div className="admin">
+        <div className="admin-container">
+          <div className="admin-header">
+            <h1 className="admin-title">🍕 Setup Admin Account</h1>
+            <p className="admin-subtitle">Create the first admin account</p>
+            <button onClick={() => setShowSetup(false)} className="back-btn">← Back to Login</button>
+          </div>
+
+          {message && <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>{message}</div>}
+
+          <form onSubmit={handleSetupAdmin} className="admin-form">
+            <div className="form-group">
+              <label htmlFor="username">Username *</label>
+              <input
+                type="text"
+                id="username"
+                name="username"
+                value={setupData.username}
+                onChange={handleSetupChange}
+                required
+                minLength="3"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="email">Email *</label>
+              <input
+                type="email"
+                id="email"
+                name="email"
+                value={setupData.email}
+                onChange={handleSetupChange}
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Password *</label>
+              <input
+                type="password"
+                id="password"
+                name="password"
+                value={setupData.password}
+                onChange={handleSetupChange}
+                required
+                minLength="6"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="confirmPassword">Confirm Password *</label>
+              <input
+                type="password"
+                id="confirmPassword"
+                name="confirmPassword"
+                value={setupData.confirmPassword}
+                onChange={handleSetupChange}
+                required
+                minLength="6"
+              />
+            </div>
+
+            <button type="submit" className="submit-btn" disabled={isSubmitting}>
+              {isSubmitting ? 'Creating Admin...' : 'Create Admin Account'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (showLogin) {
+    return (
+      <div className="admin">
+        <div className="admin-container">
+          <div className="admin-header">
+            <h1 className="admin-title">🍕 Blog Admin Login</h1>
+            <p className="admin-subtitle">Access the blog management panel</p>
+            <a href="/" className="back-to-website">← Back to Website</a>
+          </div>
+
+          {message && <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>{message}</div>}
+
+          <form onSubmit={handleLogin} className="admin-form">
+            <div className="form-group">
+              <label htmlFor="email">Email *</label>
+              <input
+                type="email"
+                id="email"
+                name="email"
+                value={loginData.email}
+                onChange={handleLoginChange}
+                required
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Password *</label>
+              <input
+                type="password"
+                id="password"
+                name="password"
+                value={loginData.password}
+                onChange={handleLoginChange}
+                required
+              />
+            </div>
+
+            <button type="submit" className="submit-btn" disabled={isSubmitting}>
+              {isSubmitting ? 'Logging in...' : 'Login'}
+            </button>
+          </form>
+
+          <div className="setup-section">
+            <p>First time here? <button onClick={() => setShowSetup(true)} className="setup-link">Setup Admin Account</button></p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="admin">
@@ -200,22 +367,14 @@ const Admin = () => {
         <div className="admin-header">
           <h1 className="admin-title">🍕 Blog Admin Panel</h1>
           <p className="admin-subtitle">Manage your blog posts</p>
-          <div className="storage-info">
-            <span className="storage-text">
-              Storage Usage: {storageUsage} bytes
-            </span>
-            {storageUsage > 3 * 1024 * 1024 && (
-              <span className="storage-warning">⚠️ Storage limit approaching</span>
-            )}
+          <div className="admin-actions">
+            <span className="user-info">Welcome, {authAPI.getCurrentUser()?.username}</span>
+            <button onClick={handleLogout} className="logout-btn">Logout</button>
+            <a href="/" className="back-to-website">← Back to Website</a>
           </div>
-          <a href="/" className="back-to-website">← Back to Website</a>
         </div>
 
-        {message && (
-          <div className={`message ${message.includes('successfully') ? 'success' : 'error'}`}>
-            {message}
-          </div>
-        )}
+        {message && <div className={`message ${message.includes('Error') ? 'error' : 'success'}`}>{message}</div>}
 
         <div className="admin-content">
           <div className="admin-form-section">
@@ -229,8 +388,8 @@ const Admin = () => {
                   name="title"
                   value={formData.title}
                   onChange={handleChange}
-                  placeholder="Enter blog post title"
                   required
+                  maxLength="200"
                 />
               </div>
 
@@ -241,21 +400,14 @@ const Admin = () => {
                   name="description"
                   value={formData.description}
                   onChange={handleChange}
-                  placeholder="Enter blog post description"
-                  rows="4"
                   required
-                ></textarea>
+                  rows="6"
+                />
               </div>
 
               <div className="form-group">
                 <label htmlFor="category">Category *</label>
-                <select
-                  id="category"
-                  name="category"
-                  value={formData.category}
-                  onChange={handleChange}
-                  required
-                >
+                <select id="category" name="category" value={formData.category} onChange={handleChange} required>
                   <option value="pizza">Pizza</option>
                   <option value="recipes">Recipes</option>
                   <option value="news">News</option>
@@ -268,50 +420,25 @@ const Admin = () => {
                 <div className="image-input-container">
                   <div className="image-input-section">
                     <label htmlFor="imageUrl" className="input-label">Image URL:</label>
-                    <input
-                      type="url"
-                      id="imageUrl"
-                      name="image"
-                      value={formData.image}
-                      onChange={handleImageUrlChange}
-                      placeholder="Enter image URL (e.g., https://example.com/image.jpg)"
-                    />
+                    <input type="url" id="imageUrl" name="image" value={formData.image} onChange={handleImageUrlChange} placeholder="Enter image URL (e.g., https://example.com/image.jpg)"/>
                   </div>
                   <div className="image-input-divider">OR</div>
                   <div className="image-input-section">
                     <label htmlFor="imageFile" className="input-label">Upload from computer:</label>
-                    <input
-                      type="file"
-                      id="imageFile"
-                      accept="image/*"
-                      onChange={handleFileChange}
-                      className="file-input"
-                    />
-                    <label htmlFor="imageFile" className="file-input-label">
-                      📁 Choose File
-                    </label>
+                    <input type="file" id="imageFile" accept="image/*" onChange={handleFileChange} className="file-input"/>
+                    <label htmlFor="imageFile" className="file-input-label">📁 Choose File</label>
                   </div>
                 </div>
-                
                 {imagePreview && (
                   <div className="image-preview">
                     <img src={imagePreview} alt="Preview" />
-                    <button 
-                      type="button" 
-                      onClick={() => {
-                        setSelectedFile(null);
-                        setImagePreview('');
-                      }}
-                      className="remove-image-btn"
-                    >
-                      ✕ Remove
-                    </button>
+                    <button type="button" onClick={() => { setSelectedFile(null); setImagePreview(''); }} className="remove-image-btn">✕ Remove</button>
                   </div>
                 )}
               </div>
 
-              <button type="submit" className="submit-btn">
-                Add Blog Post
+              <button type="submit" className="submit-btn" disabled={isSubmitting}>
+                {isSubmitting ? 'Adding Blog Post...' : 'Add Blog Post'}
               </button>
             </form>
           </div>
@@ -319,33 +446,27 @@ const Admin = () => {
           <div className="admin-posts-section">
             <h2>Existing Blog Posts ({blogPosts.length})</h2>
             {blogPosts.length === 0 ? (
-              <div className="no-posts-admin">
-                <div className="no-posts-icon">📝</div>
-                <p>No blog posts yet. Add your first post above!</p>
-              </div>
+              <p className="no-posts">No blog posts yet. Create your first one above!</p>
             ) : (
-              <div className="admin-posts-grid">
+              <div className="blog-posts-list">
                 {blogPosts.map((post) => (
-                  <div key={post.id} className="admin-post-card">
-                    <div className="admin-post-image">
-                      {post.image ? (
-                        <img src={post.image} alt={post.title} />
-                      ) : (
-                        <div className="admin-post-placeholder">🍕</div>
-                      )}
-                    </div>
-                    <div className="admin-post-content">
+                  <div key={post._id} className="blog-post-item">
+                    <div className="post-info">
                       <h3>{post.title}</h3>
-                      <p>{post.description}</p>
-                      <div className="admin-post-meta">
-                        <span>{new Date(post.timestamp).toLocaleDateString()}</span>
-                        <button
-                          onClick={() => handleDelete(post.id)}
-                          className="delete-btn"
-                        >
-                          🗑️ Delete
-                        </button>
-                      </div>
+                      <p className="post-meta">
+                        Category: {post.category} | 
+                        Created: {new Date(post.createdAt).toLocaleDateString()} |
+                        Views: {post.views || 0}
+                      </p>
+                      <p className="post-description">{post.description.substring(0, 100)}...</p>
+                    </div>
+                    <div className="post-actions">
+                      <button
+                        onClick={() => handleDelete(post._id)}
+                        className="delete-btn"
+                      >
+                        Delete
+                      </button>
                     </div>
                   </div>
                 ))}
