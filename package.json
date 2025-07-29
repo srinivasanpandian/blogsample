@@ -1,0 +1,26 @@
+{
+  "name": "pizza-blog-fullstack",
+  "version": "1.0.0",
+  "description": "Full-stack pizza website with blog system",
+  "main": "pizza-backend/server.js",
+  "scripts": {
+    "start": "cd pizza-backend && npm start",
+    "build": "cd pizza-backend && npm install",
+    "dev": "cd pizza-backend && npm run dev",
+    "install-backend": "cd pizza-backend && npm install",
+    "install-frontend": "cd pizza-website && npm install"
+  },
+  "keywords": [
+    "pizza",
+    "blog",
+    "react",
+    "nodejs",
+    "express",
+    "mongodb"
+  ],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=14.0.0"
+  }
+} 

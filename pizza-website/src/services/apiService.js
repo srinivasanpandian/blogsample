@@ -1,4 +1,4 @@
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://pizza-blog-backend.onrender.com/api';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://YOUR-ACTUAL-BACKEND-URL.onrender.com/api';
 
 // Helper function to handle API responses
 const handleResponse = async (response) => {

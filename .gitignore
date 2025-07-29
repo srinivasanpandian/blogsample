@@ -95,3 +95,5 @@ pizza-backend/temp/
 
 # Frontend specific
 pizza-website/.env 
+# Local Netlify folder
+.netlify
